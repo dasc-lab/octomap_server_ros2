@@ -26,7 +26,7 @@ def generate_launch_description():
               'ground_filter/plane_distance': 0.07,
               'compress_map': True,
               'incremental_2D_projection': False,
-              'sensor_model/max_range': -1.0,
+              'sensor_model/max_range': 4.0,
               'sensor_model/hit': 0.7,
               'sensor_model/miss': 0.4,
               'sensor_model/min': 0.12,
@@ -40,6 +40,9 @@ def generate_launch_description():
               'color_free/b': 1.0,
               'color_free/a': 1.0,
               'publish_free_space': False,
+              'publish_marker_array': True,
+              'publish_binary_map': True,
+              'publish_full_map': False
     }
     
     remap = [('cloud_in', '/camera/depth/color/points')]

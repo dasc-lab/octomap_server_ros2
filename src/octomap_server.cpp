@@ -152,6 +152,13 @@ namespace octomap_server {
         
         m_publishFreeSpace = this->declare_parameter(
             "publish_free_space", m_publishFreeSpace);
+        m_publishMarkerArray = this->declare_parameter(
+            "publish_marker_array", m_publishMarkerArray);
+        m_publishBinaryMap = this->declare_parameter(
+            "publish_binary_map", m_publishBinaryMap);
+        m_publishFullMap = this->declare_parameter(
+            "publish_full_map", m_publishFullMap);
+        
         std::string msg = std::string("Publishing non-latched (topics are only)") +
                     "prepared as needed, will only be re-published on map change";
         RCLCPP_INFO(this->get_logger(), msg.c_str());
@@ -173,15 +180,16 @@ namespace octomap_server {
         this->m_markerPub = this->create_publisher<
             visualization_msgs::msg::MarkerArray>(
                 "occupied_cells_vis_array", qos);
+        
         this->m_binaryMapPub = this->create_publisher<
             octomap_msgs::msg::Octomap>("octomap_binary", qos);
+        
         this->m_fullMapPub = this->create_publisher<
             octomap_msgs::msg::Octomap>("octomap_full", qos);
-        this->m_pointCloudPub = this->create_publisher<
-            sensor_msgs::msg::PointCloud2>(
-                "octomap_point_cloud_centers", qos);
+        
         this->m_mapPub = this->create_publisher<
             nav_msgs::msg::OccupancyGrid>("projected_map", qos);
+        
         this->m_fmarkerPub = this->create_publisher<
             visualization_msgs::msg::MarkerArray>(
                 "free_cells_vis_array", qos);
@@ -195,6 +203,7 @@ namespace octomap_server {
         auto create_timer_interface = std::make_shared<tf2_ros::CreateTimerROS>(
             this->get_node_base_interface(),
             this->get_node_timers_interface());
+        
         this->buffer_->setCreateTimerInterface(create_timer_interface);
         
         this->m_tfPointCloudSub = std::make_shared<tf2_ros::MessageFilter<
@@ -203,7 +212,9 @@ namespace octomap_server {
                 this->get_node_logging_interface(),
                 this->get_node_clock_interface(),
                 std::chrono::seconds(1));
+        
         this->m_tfPointCloudSub->connectInput(*m_pointCloudSub);
+        
         this->m_tfPointCloudSub->registerCallback(
             std::bind(&OctomapServer::insertCloudCallback, this, ph::_1));
 
@@ -278,7 +289,7 @@ namespace octomap_server {
     void OctomapServer::insertCloudCallback(
         const sensor_msgs::msg::PointCloud2::ConstSharedPtr &cloud){
         auto start = std::chrono::steady_clock::now();
-        
+       
         //
         // ground filtering in base frame
         //
@@ -294,8 +305,6 @@ namespace octomap_server {
                 throw "Failed";
             }
             
-            // RCLCPP_INFO(this->get_logger(), "Can transform");
-
             sensorToWorldTf = this->buffer_->lookupTransform(
                 m_worldFrameId, cloud->header.frame_id,
                 cloud->header.stamp);
@@ -315,71 +324,19 @@ namespace octomap_server {
         pcl::PassThrough<PCLPoint> pass_z;
         pass_z.setFilterFieldName("z");
         pass_z.setFilterLimits(m_pointcloudMinZ, m_pointcloudMaxZ);
-
-        PCLPointCloud pc_ground; // segmented ground plane
-        PCLPointCloud pc_nonground; // everything else
-        
-        if (m_filterGroundPlane) {
-            geometry_msgs::msg::TransformStamped baseToWorldTf;
-            geometry_msgs::msg::TransformStamped sensorToBaseTf;
             
-            try {
-                if (!this->buffer_->canTransform(
-                    m_baseFrameId, cloud->header.frame_id,
-                    cloud->header.stamp)) {
-                    throw "Failed";
-                }
-
-                sensorToBaseTf = this->buffer_->lookupTransform(
-                    m_baseFrameId, cloud->header.frame_id,
-                    cloud->header.stamp);
-                baseToWorldTf = this->buffer_->lookupTransform(
-                    m_worldFrameId, m_baseFrameId, cloud->header.stamp);
-            } catch (tf2::TransformException& ex) {
-                std::string msg = std::string("Transform error for ground plane filter") +
-                    "You need to set the base_frame_id or disable filter_ground.";
-                RCLCPP_ERROR(this->get_logger(), "%s %", msg, ex.what());
-                return;
-            }
-
-            Eigen::Matrix4f sensorToBase =
-                pcl_ros::transformAsMatrix(sensorToBaseTf);
-            Eigen::Matrix4f baseToWorld = 
-                pcl_ros::transformAsMatrix(baseToWorldTf);
-
-            // transform pointcloud from sensor frame to fixed robot frame
-            pcl::transformPointCloud(pc, pc, sensorToBase);
-            pass_x.setInputCloud(pc.makeShared());
-            pass_x.filter(pc);
-            pass_y.setInputCloud(pc.makeShared());
-            pass_y.filter(pc);
-            pass_z.setInputCloud(pc.makeShared());
-            pass_z.filter(pc);
-            filterGroundPlane(pc, pc_ground, pc_nonground);
-
-            // transform clouds to world frame for insertion
-            pcl::transformPointCloud(pc_ground, pc_ground, baseToWorld);
-            pcl::transformPointCloud(pc_nonground, pc_nonground, baseToWorld);
-        } else {
-            // directly transform to map frame:
-            pcl::transformPointCloud(pc, pc, sensorToWorld);
-            
-            // just filter height range:
-            pass_x.setInputCloud(pc.makeShared());
-            pass_x.filter(pc);
-            pass_y.setInputCloud(pc.makeShared());
-            pass_y.filter(pc);
-            pass_z.setInputCloud(pc.makeShared());
-            pass_z.filter(pc);
-
-            pc_nonground = pc;
-            // pc_nonground is empty without ground segmentation
-            pc_ground.header = pc.header;
-            pc_nonground.header = pc.header;
-        }
+        // directly transform to map frame:
+        pcl::transformPointCloud(pc, pc, sensorToWorld);
         
-        insertScan(sensorToWorldTf.transform.translation,
-                   pc_ground, pc_nonground);
+        // just filter height range:
+        pass_x.setInputCloud(pc.makeShared());
+        pass_x.filter(pc);
+        pass_y.setInputCloud(pc.makeShared());
+        pass_y.filter(pc);
+        pass_z.setInputCloud(pc.makeShared());
+        pass_z.filter(pc);
+
+        insertScan(sensorToWorldTf.transform.translation, pc);
 
         auto end = std::chrono::steady_clock::now();
         std::chrono::duration<double> elapsed_seconds = end - start;
@@ -390,7 +347,6 @@ namespace octomap_server {
 
     void OctomapServer::insertScan(
         const geometry_msgs::msg::Vector3 &sensorOriginTf,
-        const PCLPointCloud& ground,
         const PCLPointCloud& nonground) {
         octomap::point3d sensorOrigin = octomap::pointTfToOctomap(sensorOriginTf);
         
@@ -405,32 +361,11 @@ namespace octomap_server {
         unsigned char* colors = new unsigned char[3];
 #endif
         
+        auto start = std::chrono::steady_clock::now();
+        
         // instead of direct scan insertion, compute update to filter ground:
         octomap::KeySet free_cells, occupied_cells;
-        // insert ground points only as free:
-        for (auto it = ground.begin(); it != ground.end(); ++it) {
-            octomap::point3d point(it->x, it->y, it->z);
-            // maxrange check
-            if ((m_maxRange > 0.0) && ((point - sensorOrigin).norm() > m_maxRange) ) {
-                point = sensorOrigin + (point - sensorOrigin).normalized() * m_maxRange;
-            }
 
-            // only clear space (ground points)
-            if (m_octree->computeRayKeys(sensorOrigin, point, m_keyRay)) {
-                free_cells.insert(m_keyRay.begin(), m_keyRay.end());
-            }
-
-            octomap::OcTreeKey endKey;
-            if (m_octree->coordToKeyChecked(point, endKey)) {
-                updateMinKey(endKey, m_updateBBXMin);
-                updateMaxKey(endKey, m_updateBBXMax);
-            } else {
-                RCLCPP_ERROR(this->get_logger(),
-                             "Could not generate Key for endpoint");
-            }
-        }
-
-        auto start = std::chrono::steady_clock::now();
         
         // all other points: free on ray, occupied on endpoint:
         for (auto it = nonground.begin(); it != nonground.end(); ++it) {
@@ -477,7 +412,7 @@ namespace octomap_server {
 
         auto end = std::chrono::steady_clock::now();
         std::chrono::duration<double> elapsed_seconds = end - start;
-        RCLCPP_INFO(this->get_logger(), "Time lapse[insert] %f", elapsed_seconds.count());
+        // RCLCPP_INFO(this->get_logger(), "Time lapse[insert] %f", elapsed_seconds.count());
         
         // mark free cells only if not seen occupied in this cloud
         for(auto it = free_cells.begin(), end=free_cells.end();
@@ -493,33 +428,33 @@ namespace octomap_server {
             m_octree->updateNode(*it, true);
         }
 
-        // TODO: eval lazy+updateInner vs. proper insertion
-        // non-lazy by default (updateInnerOccupancy() too slow for large maps)
-        //m_octree->updateInnerOccupancy();
-        octomap::point3d minPt, maxPt;
-        /* todo
-        ROS_DEBUG_STREAM("Bounding box keys (before): "
-                         << m_updateBBXMin[0] << " "
-                         << m_updateBBXMin[1] << " "
-                         << m_updateBBXMin[2] << " / "
-                         <<m_updateBBXMax[0] << " "
-                         << m_updateBBXMax[1] << " "
-                         << m_updateBBXMax[2]);
-        */
-        
-        // TODO: we could also limit the bbx to be within the map bounds here
-        // (see publishing check)
-        
-        minPt = m_octree->keyToCoord(m_updateBBXMin);
-        maxPt = m_octree->keyToCoord(m_updateBBXMax);
-        /* todo
-        ROS_DEBUG_STREAM("Updated area bounding box: "<< minPt << " - "<<maxPt);
-        ROS_DEBUG_STREAM("Bounding box keys (after): "
-                         << m_updateBBXMin[0] << " " << m_updateBBXMin[1]
-                         << " " << m_updateBBXMin[2] << " / "
-                         << m_updateBBXMax[0] << " "<< m_updateBBXMax[1]
-                         << " "<< m_updateBBXMax[2]);
-        */
+        // // TODO: eval lazy+updateInner vs. proper insertion
+        // // non-lazy by default (updateInnerOccupancy() too slow for large maps)
+        // //m_octree->updateInnerOccupancy();
+        // octomap::point3d minPt, maxPt;
+        // /* todo
+        // ROS_DEBUG_STREAM("Bounding box keys (before): "
+        //                  << m_updateBBXMin[0] << " "
+        //                  << m_updateBBXMin[1] << " "
+        //                  << m_updateBBXMin[2] << " / "
+        //                  <<m_updateBBXMax[0] << " "
+        //                  << m_updateBBXMax[1] << " "
+        //                  << m_updateBBXMax[2]);
+        // */
+        // 
+        // // TODO: we could also limit the bbx to be within the map bounds here
+        // // (see publishing check)
+        // 
+        // minPt = m_octree->keyToCoord(m_updateBBXMin);
+        // maxPt = m_octree->keyToCoord(m_updateBBXMax);
+        // /* todo
+        // ROS_DEBUG_STREAM("Updated area bounding box: "<< minPt << " - "<<maxPt);
+        // ROS_DEBUG_STREAM("Bounding box keys (after): "
+        //                  << m_updateBBXMin[0] << " " << m_updateBBXMin[1]
+        //                  << " " << m_updateBBXMin[2] << " / "
+        //                  << m_updateBBXMax[0] << " "<< m_updateBBXMax[1]
+        //                  << " "<< m_updateBBXMax[2]);
+        // */
 
         if (m_compressMap) {
             m_octree->prune();
@@ -547,13 +482,10 @@ namespace octomap_server {
             return;
         }
 
-        bool publishFreeMarkerArray = m_publishFreeSpace &&
-            m_fmarkerPub->get_subscription_count()  > 0;
-        bool publishMarkerArray = m_markerPub->get_subscription_count() > 0;
-        bool publishPointCloud = m_pointCloudPub->get_subscription_count() > 0;
-        bool publishBinaryMap = m_binaryMapPub->get_subscription_count() > 0;
-        bool publishFullMap = m_fullMapPub->get_subscription_count() > 0;
-        m_publish2DMap = m_mapPub->get_subscription_count() > 0;
+        bool publishFreeMarkerArray = m_publishFreeSpace; // && m_fmarkerPub->get_subscription_count()  > 0;
+        bool publishMarkerArray = m_publishMarkerArray; // && m_markerPub->get_subscription_count() > 0;
+        bool publishBinaryMap = m_publishBinaryMap; //&& m_binaryMapPub->get_subscription_count() > 0;
+        bool publishFullMap = m_publishFullMap; // &&m_fullMapPub->get_subscription_count() > 0;
 
         // init markers for free space:
         visualization_msgs::msg::MarkerArray freeNodesVis;
@@ -573,26 +505,16 @@ namespace octomap_server {
         // init pointcloud:
         pcl::PointCloud<PCLPoint> pclCloud;
 
-        // call pre-traversal hook:
-        handlePreNodeTraversal(rostime);
-        
         // now, traverse all leafs in the tree:
         for (auto it = m_octree->begin(m_maxTreeDepth),
                  end = m_octree->end(); it != end; ++it) {
-            bool inUpdateBBX = isInUpdateBBX(it);
-
-            // call general hook:
-            handleNode(it);
-            if (inUpdateBBX) {
-                handleNodeInBBX(it);
-            }
 
             if (m_octree->isNodeOccupied(*it)) {
                 double z = it.getZ();
                 double half_size = it.getSize() / 2.0;
                 if (z + half_size > m_occupancyMinZ &&
                     z - half_size < m_occupancyMaxZ) {
-                    double size = it.getSize();
+                    //double size = it.getSize();
                     double x = it.getX();
                     double y = it.getY();
 #ifdef COLOR_OCTOMAP_SERVER
@@ -610,11 +532,6 @@ namespace octomap_server {
                     } // else: current octree node is no speckle, send it out
 
                     
-                    handleOccupiedNode(it);
-                    if (inUpdateBBX) {
-                        handleOccupiedNodeInBBX(it);
-                    }
-
                     //create marker:
                     if (publishMarkerArray){
                         unsigned idx = it.getDepth();
@@ -648,23 +565,6 @@ namespace octomap_server {
                         }
 #endif
                     }
-
-                    // insert into pointcloud:
-                    if (publishPointCloud) {
-#ifdef COLOR_OCTOMAP_SERVER
-                        PCLPoint _point = PCLPoint();
-                        _point.x = x;
-                        _point.y = y;
-                        _point.z = z;
-                        _point.r = r;
-                        _point.g = g;
-                        _point.b = b;
-                        pclCloud.push_back(_point);
-#else
-                        pclCloud.push_back(PCLPoint(x, y, z));
-#endif
-                    }
-
                 }
             } else {
                 // node not occupied => mark as free in 2D map if unknown so far
@@ -672,10 +572,6 @@ namespace octomap_server {
                 double half_size = it.getSize() / 2.0;
                 if (z + half_size > m_occupancyMinZ &&
                     z - half_size < m_occupancyMaxZ) {
-                    handleFreeNode(it);
-                    if (inUpdateBBX) {
-                        handleFreeNodeInBBX(it);
-                    }
 
                     if (m_publishFreeSpace) {
                         double x = it.getX();
@@ -697,9 +593,6 @@ namespace octomap_server {
                 }
             }
         }
-
-        // call post-traversal hook:
-        handlePostNodeTraversal(rostime);
 
         // finish MarkerArray:
         if (publishMarkerArray) {
@@ -757,14 +650,6 @@ namespace octomap_server {
 
 
         // finish pointcloud:
-        if (publishPointCloud) {
-            sensor_msgs::msg::PointCloud2 cloud;
-            pcl::toROSMsg(pclCloud, cloud);
-            cloud.header.frame_id = m_worldFrameId;
-            cloud.header.stamp = rostime;
-            m_pointCloudPub->publish(cloud);
-        }
-
         if (publishBinaryMap) {
             publishBinaryOctoMap(rostime);
         }
@@ -1022,187 +907,11 @@ namespace octomap_server {
         }
     }
 
-    void OctomapServer::handlePreNodeTraversal(
-        const rclcpp::Time& rostime) {
-        if (m_publish2DMap){
-            // init projected 2D map:
-            m_gridmap.header.frame_id = m_worldFrameId;
-            m_gridmap.header.stamp = rostime;
-            nav_msgs::msg::MapMetaData oldMapInfo = m_gridmap.info;
 
-            // TODO:
-            // move most of this stuff into c'tor and init map only once(adjust if size changes)
-            double minX, minY, minZ, maxX, maxY, maxZ;
-            m_octree->getMetricMin(minX, minY, minZ);
-            m_octree->getMetricMax(maxX, maxY, maxZ);
 
-            octomap::point3d minPt(minX, minY, minZ);
-            octomap::point3d maxPt(maxX, maxY, maxZ);
-            octomap::OcTreeKey minKey = m_octree->coordToKey(minPt, m_maxTreeDepth);
-            octomap::OcTreeKey maxKey = m_octree->coordToKey(maxPt, m_maxTreeDepth);
 
-            RCLCPP_INFO(
-                this->get_logger(),
-                "MinKey: %d %d %d / MaxKey: %d %d %d",
-                minKey[0], minKey[1], minKey[2], maxKey[0], maxKey[1], maxKey[2]);
 
-            // add padding if requested (= new min/maxPts in x&y):
-            double halfPaddedX = 0.5*m_minSizeX;
-            double halfPaddedY = 0.5*m_minSizeY;
-            minX = std::min(minX, -halfPaddedX);
-            maxX = std::max(maxX, halfPaddedX);
-            minY = std::min(minY, -halfPaddedY);
-            maxY = std::max(maxY, halfPaddedY);
-            minPt = octomap::point3d(minX, minY, minZ);
-            maxPt = octomap::point3d(maxX, maxY, maxZ);
 
-            octomap::OcTreeKey paddedMaxKey;
-            if (!m_octree->coordToKeyChecked(
-                    minPt, m_maxTreeDepth, m_paddedMinKey)) {
-                RCLCPP_ERROR(
-                    this->get_logger(),
-                    "Could not create padded min OcTree key at %f %f %f",
-                    minPt.x(), minPt.y(), minPt.z());
-                return;
-            }
-            if (!m_octree->coordToKeyChecked(
-                    maxPt, m_maxTreeDepth, paddedMaxKey)) {
-                RCLCPP_ERROR(
-                    this->get_logger(),
-                    "Could not create padded max OcTree key at %f %f %f",
-                    maxPt.x(), maxPt.y(), maxPt.z());
-                return;
-            }
-
-            RCLCPP_INFO(
-                this->get_logger(),
-                "Padded MinKey: %d %d %d / padded MaxKey: %d %d %d",
-                m_paddedMinKey[0], m_paddedMinKey[1], m_paddedMinKey[2],
-                paddedMaxKey[0], paddedMaxKey[1], paddedMaxKey[2]);
-            assert(paddedMaxKey[0] >= maxKey[0] && paddedMaxKey[1] >= maxKey[1]);
-            
-            m_multires2DScale = 1 << (m_treeDepth - m_maxTreeDepth);
-            m_gridmap.info.width = (paddedMaxKey[0] - m_paddedMinKey[0]) /
-                m_multires2DScale + 1;
-            m_gridmap.info.height = (paddedMaxKey[1] - m_paddedMinKey[1]) /
-                m_multires2DScale + 1;
-
-            int mapOriginX = minKey[0] - m_paddedMinKey[0];
-            int mapOriginY = minKey[1] - m_paddedMinKey[1];
-            assert(mapOriginX >= 0 && mapOriginY >= 0);
-
-            // might not exactly be min / max of octree:
-            octomap::point3d origin = m_octree->keyToCoord(m_paddedMinKey, m_treeDepth);
-            double gridRes = m_octree->getNodeSize(m_maxTreeDepth);
-            m_projectCompleteMap = (!m_incrementalUpdate ||
-                                    (std::abs(gridRes-m_gridmap.info.resolution) > 1e-6));
-            
-            m_gridmap.info.resolution = gridRes;
-            m_gridmap.info.origin.position.x = origin.x() - gridRes*0.5;
-            m_gridmap.info.origin.position.y = origin.y() - gridRes*0.5;
-            if (m_maxTreeDepth != m_treeDepth) {
-                m_gridmap.info.origin.position.x -= m_res/2.0;
-                m_gridmap.info.origin.position.y -= m_res/2.0;
-            }
-
-            // workaround for  multires. projection not working properly for inner nodes:
-            // force re-building complete map
-            if (m_maxTreeDepth < m_treeDepth) {
-                m_projectCompleteMap = true;
-            }
-
-            if(m_projectCompleteMap) {
-                RCLCPP_INFO(this->get_logger(), "Rebuilding complete 2D map");
-                m_gridmap.data.clear();
-                // init to unknown:
-                m_gridmap.data.resize(m_gridmap.info.width * m_gridmap.info.height, -1);
-
-            } else {
-                if (mapChanged(oldMapInfo, m_gridmap.info)){
-                    RCLCPP_INFO(
-                        this->get_logger(),
-                        "2D grid map size changed to %dx%d",
-                        m_gridmap.info.width, m_gridmap.info.height);
-                    adjustMapData(m_gridmap, oldMapInfo);
-                }
-                nav_msgs::msg::OccupancyGrid::_data_type::iterator startIt;
-                auto mapUpdateBBXMinX = std::max(
-                    0, (int(m_updateBBXMin[0]) - int(m_paddedMinKey[0])) /
-                    int(m_multires2DScale));
-                auto mapUpdateBBXMinY = std::max(
-                    0, (int(m_updateBBXMin[1]) - int(m_paddedMinKey[1])) /
-                    int(m_multires2DScale));
-                auto mapUpdateBBXMaxX = std::min(
-                    int(m_gridmap.info.width-1),
-                    (int(m_updateBBXMax[0]) - int(m_paddedMinKey[0])) /
-                    int(m_multires2DScale));
-                auto mapUpdateBBXMaxY = std::min(
-                    int(m_gridmap.info.height-1),
-                    (int(m_updateBBXMax[1]) - int(m_paddedMinKey[1])) /
-                    int(m_multires2DScale));
-
-                assert(mapUpdateBBXMaxX > mapUpdateBBXMinX);
-                assert(mapUpdateBBXMaxY > mapUpdateBBXMinY);
-
-                auto numCols = mapUpdateBBXMaxX-mapUpdateBBXMinX +1;
-
-                // test for max idx:
-                auto max_idx = m_gridmap.info.width*mapUpdateBBXMaxY + mapUpdateBBXMaxX;
-                if (max_idx  >= m_gridmap.data.size()) {
-                    RCLCPP_ERROR(
-                        this->get_logger(),
-                        std::string("BBX index not valid:").c_str(),
-                        "%d (max index %zu for size %d x %d) update-BBX is: ",
-                        "[%zu %zu]-[%zu %zu]",
-                        max_idx, m_gridmap.data.size(), m_gridmap.info.width,
-                        m_gridmap.info.height, mapUpdateBBXMinX,
-                        mapUpdateBBXMinY, mapUpdateBBXMaxX, mapUpdateBBXMaxY);
-                }
-
-                // reset proj. 2D map in bounding box:
-                for (unsigned int j = mapUpdateBBXMinY; j <= mapUpdateBBXMaxY; ++j) {
-                    std::fill_n(
-                        m_gridmap.data.begin() + m_gridmap.info.width*j+mapUpdateBBXMinX,
-                        numCols, -1);
-                }
-            }
-        }
-    }
-
-    void OctomapServer::handlePostNodeTraversal(
-        const rclcpp::Time& rostime){
-        if (m_publish2DMap) {
-            m_mapPub->publish(m_gridmap);
-        }
-    }
-
-    void OctomapServer::handleOccupiedNode(
-        const OcTreeT::iterator& it){
-        if (m_publish2DMap && m_projectCompleteMap){
-            update2DMap(it, true);
-        }
-    }
-
-    void OctomapServer::handleFreeNode(
-        const OcTreeT::iterator& it){
-        if (m_publish2DMap && m_projectCompleteMap){
-            update2DMap(it, false);
-        }
-    }
-
-    void OctomapServer::handleOccupiedNodeInBBX(
-        const OcTreeT::iterator& it){
-        if (m_publish2DMap && !m_projectCompleteMap){
-            update2DMap(it, true);
-        }
-    }
-
-    void OctomapServer::handleFreeNodeInBBX(
-        const OcTreeT::iterator& it){
-        if (m_publish2DMap && !m_projectCompleteMap){
-            update2DMap(it, false);
-        }
-    }
 
     void OctomapServer::update2DMap(
         const OcTreeT::iterator& it, bool occupied) {

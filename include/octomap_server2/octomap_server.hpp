@@ -82,8 +82,6 @@ namespace octomap_server {
         
         static std_msgs::msg::ColorRGBA heightMapColor(double h);
 
-        rclcpp::Publisher<sensor_msgs::msg::PointCloud2
-                          >::SharedPtr m_pointCloudPub;
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray
                           >::SharedPtr m_fmarkerPub;
         rclcpp::Publisher<visualization_msgs::msg::MarkerArray
@@ -116,7 +114,12 @@ namespace octomap_server {
         std_msgs::msg::ColorRGBA m_color;
         std_msgs::msg::ColorRGBA m_colorFree;
         double m_colorFactor;
+        
         bool m_publishFreeSpace;
+        bool m_publishMarkerArray;
+        bool m_publishBinaryMap;
+        bool m_publishFullMap;
+
         double m_res;
         unsigned m_treeDepth;
         unsigned m_maxTreeDepth;
@@ -140,7 +143,6 @@ namespace octomap_server {
         // downprojected 2D map:
         bool m_incrementalUpdate;
         nav_msgs::msg::OccupancyGrid m_gridmap;
-        bool m_publish2DMap;
         bool m_mapOriginChanged;
         octomap::OcTreeKey m_paddedMinKey;
         unsigned m_multires2DScale;
@@ -161,16 +163,16 @@ namespace octomap_server {
             }
         };
         
-        /// Test if key is within update area of map (2D, ignores height)
-        inline bool isInUpdateBBX(const OcTreeT::iterator& it) const {
-            // 2^(tree_depth-depth) voxels wide:
-            unsigned voxelWidth = (1 << (m_maxTreeDepth - it.getDepth()));
-            octomap::OcTreeKey key = it.getIndexKey(); // lower corner of voxel
-            return (key[0] + voxelWidth >= m_updateBBXMin[0]
-                    && key[1] + voxelWidth >= m_updateBBXMin[1]
-                    && key[0] <= m_updateBBXMax[0]
-                    && key[1] <= m_updateBBXMax[1]);
-        }
+        ///// Test if key is within update area of map (2D, ignores height)
+        //inline bool isInUpdateBBX(const OcTreeT::iterator& it) const {
+        //    // 2^(tree_depth-depth) voxels wide:
+        //    unsigned voxelWidth = (1 << (m_maxTreeDepth - it.getDepth()));
+        //    octomap::OcTreeKey key = it.getIndexKey(); // lower corner of voxel
+        //    return (key[0] + voxelWidth >= m_updateBBXMin[0]
+        //            && key[1] + voxelWidth >= m_updateBBXMin[1]
+        //            && key[0] <= m_updateBBXMax[0]
+        //            && key[1] <= m_updateBBXMax[1]);
+        //}
         
         inline unsigned mapIdx(int i, int j) const {
             return m_gridmap.info.width * j + i;
@@ -196,8 +198,12 @@ namespace octomap_server {
         
         virtual void insertScan(
             const geometry_msgs::msg::Vector3  &sensorOrigin,
-            const PCLPointCloud& ground,
             const PCLPointCloud& nonground);
+        
+        //virtual void insertScan(
+        //    const geometry_msgs::msg::Vector3  &sensorOrigin,
+        //    const PCLPointCloud& ground,
+        //    const PCLPointCloud& nonground);
 
         void filterGroundPlane(const PCLPointCloud& pc,
                                PCLPointCloud& ground,
@@ -205,14 +211,6 @@ namespace octomap_server {
 
         bool isSpeckleNode(const octomap::OcTreeKey& key) const;
 
-        virtual void handlePreNodeTraversal(const rclcpp::Time &);
-        virtual void handlePostNodeTraversal(const rclcpp::Time &);
-        virtual void handleNode(const OcTreeT::iterator& it) {};
-        virtual void handleNodeInBBX(const OcTreeT::iterator& it) {};
-        virtual void handleOccupiedNode(const OcTreeT::iterator& it);
-        virtual void handleOccupiedNodeInBBX(const OcTreeT::iterator& it);
-        virtual void handleFreeNode(const OcTreeT::iterator& it);
-        virtual void handleFreeNodeInBBX(const OcTreeT::iterator& it);
         virtual void update2DMap(const OcTreeT::iterator&, bool);
 
         virtual void onInit();        
