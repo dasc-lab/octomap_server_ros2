@@ -12,6 +12,7 @@
 #include <visualization_msgs/msg/marker_array.hpp>
 #include <nav_msgs/msg/occupancy_grid.hpp>
 #include <std_msgs/msg/color_rgba.hpp>
+#include <std_msgs/msg/string.hpp>
 #include <geometry_msgs/msg/point.hpp>
 #include <geometry_msgs/msg/vector3.hpp>
 #include <geometry_msgs/msg/transform_stamped.hpp>
@@ -27,6 +28,7 @@
 #include <pcl/io/pcd_io.h>
 #include <pcl/filters/extract_indices.h>
 #include <pcl/filters/passthrough.h>
+#include <pcl/filters/voxel_grid.h>
 #include <pcl_conversions/pcl_conversions.h>
 #include <pcl/common/transforms.h>
 
@@ -50,19 +52,10 @@
 #include <octomap_server2/transforms.hpp>
 #include <octomap_server2/conversions.h>
 
-#ifdef COLOR_OCTOMAP_SERVER
-#include <octomap/ColorOcTree.h>
-#endif
 
-#ifdef COLOR_OCTOMAP_SERVER
-using PCLPoint = pcl::PointXYZRGB;
-using PCLPointCloud = pcl::PointCloud<PCLPoint>;
-using OcTreeT = octomap::ColorOcTree;
-#else
 using PCLPoint = pcl::PointXYZ;
 using PCLPointCloud = pcl::PointCloud<PCLPoint>;
 using OcTreeT = octomap::OcTree;
-#endif
 
 using OctomapSrv =  octomap_msgs::srv::GetOctomap;
 using BBXSrv =  octomap_msgs::srv::BoundingBoxQuery;
@@ -72,7 +65,9 @@ namespace ph = std::placeholders;
 
 namespace octomap_server {
     class OctomapServer: public rclcpp::Node {
-        
+   
+    public:	    
+        std::shared_ptr<OcTreeT> m_octree;
     protected:
 
         std::shared_ptr<message_filters::Subscriber<
@@ -92,24 +87,22 @@ namespace octomap_server {
                           >::SharedPtr m_fullMapPub;
         rclcpp::Publisher<nav_msgs::msg::OccupancyGrid
                           >::SharedPtr m_mapPub;
-        
+	rclcpp::Publisher<sensor_msgs::msg::PointCloud2
+		          >::SharedPtr m_occupiedPCLPub;
+
+	rclcpp::TimerBase::SharedPtr timer_;
+
         rclcpp::Service<OctomapSrv>::SharedPtr m_octomapBinaryService;
         rclcpp::Service<OctomapSrv>::SharedPtr m_octomapFullService;
-        rclcpp::Service<BBXSrv>::SharedPtr m_clearBBXService;
         rclcpp::Service<std_srvs::srv::Empty>::SharedPtr m_resetService;
 
         std::shared_ptr<tf2_ros::Buffer> buffer_;
         std::shared_ptr<tf2_ros::TransformListener> m_tfListener;
 
-        std::shared_ptr<OcTreeT> m_octree;
         
-        octomap::KeyRay m_keyRay;  // temp storage for ray casting
-        octomap::OcTreeKey m_updateBBXMin;
-        octomap::OcTreeKey m_updateBBXMax;
-
+        double m_minRange;
         double m_maxRange;
         std::string m_worldFrameId; // the map frame
-        std::string m_baseFrameId; // base of the robot for ground plane filtering
         bool m_useHeightMap;
         std_msgs::msg::ColorRGBA m_color;
         std_msgs::msg::ColorRGBA m_colorFree;
@@ -119,6 +112,9 @@ namespace octomap_server {
         bool m_publishMarkerArray;
         bool m_publishBinaryMap;
         bool m_publishFullMap;
+	bool m_publishOccupiedPCL;
+	int m_publishEvery_ms;
+	double m_publishResolution;
 
         double m_res;
         unsigned m_treeDepth;
@@ -131,98 +127,37 @@ namespace octomap_server {
         double m_pointcloudMaxZ;
         double m_occupancyMinZ;
         double m_occupancyMaxZ;
-        double m_minSizeX;
-        double m_minSizeY;
-        bool m_filterSpeckles;
-        bool m_filterGroundPlane;
-        double m_groundFilterDistance;
-        double m_groundFilterAngle;
-        double m_groundFilterPlaneDistance;
-        bool m_compressMap;
+        
+	bool m_compressMap;
 
         // downprojected 2D map:
-        bool m_incrementalUpdate;
-        nav_msgs::msg::OccupancyGrid m_gridmap;
         bool m_mapOriginChanged;
         octomap::OcTreeKey m_paddedMinKey;
         unsigned m_multires2DScale;
         bool m_projectCompleteMap;
-        bool m_useColoredMap;
-        
-        inline static void updateMinKey(const octomap::OcTreeKey& in,
-                                        octomap::OcTreeKey& min) {
-            for (unsigned i = 0; i < 3; ++i) {
-                min[i] = std::min(in[i], min[i]);
-            }
-        };
+       
+	int print_logger =0;
 
-        inline static void updateMaxKey(const octomap::OcTreeKey& in,
-                                        octomap::OcTreeKey& max) {
-            for (unsigned i = 0; i < 3; ++i) {
-                max[i] = std::max(in[i], max[i]);
-            }
-        };
-        
-        ///// Test if key is within update area of map (2D, ignores height)
-        //inline bool isInUpdateBBX(const OcTreeT::iterator& it) const {
-        //    // 2^(tree_depth-depth) voxels wide:
-        //    unsigned voxelWidth = (1 << (m_maxTreeDepth - it.getDepth()));
-        //    octomap::OcTreeKey key = it.getIndexKey(); // lower corner of voxel
-        //    return (key[0] + voxelWidth >= m_updateBBXMin[0]
-        //            && key[1] + voxelWidth >= m_updateBBXMin[1]
-        //            && key[0] <= m_updateBBXMax[0]
-        //            && key[1] <= m_updateBBXMax[1]);
-        //}
-        
-        inline unsigned mapIdx(int i, int j) const {
-            return m_gridmap.info.width * j + i;
-        }
-        
-        inline unsigned mapIdx(const octomap::OcTreeKey& key) const {
-            return mapIdx((key[0] - m_paddedMinKey[0]) / m_multires2DScale,
-                          (key[1] - m_paddedMinKey[1]) / m_multires2DScale);
-
-        }
-
-        inline bool mapChanged(const nav_msgs::msg::MapMetaData& oldMapInfo,
-                               const nav_msgs::msg::MapMetaData& newMapInfo) {
-            return (oldMapInfo.height != newMapInfo.height
-                    || oldMapInfo.width != newMapInfo.width
-                    || oldMapInfo.origin.position.x != newMapInfo.origin.position.x
-                    || oldMapInfo.origin.position.y != newMapInfo.origin.position.y);
-        }
-
+        void publishMarkerArrayOctomap(const rclcpp::Time &) const;
         void publishBinaryOctoMap(const rclcpp::Time &) const;
         void publishFullOctoMap(const rclcpp::Time &) const;
+        void publishAllNow();
         virtual void publishAll(const rclcpp::Time &);
         
-        virtual void insertScan(
-            const geometry_msgs::msg::Vector3  &sensorOrigin,
-            const PCLPointCloud& nonground);
-        
-        //virtual void insertScan(
-        //    const geometry_msgs::msg::Vector3  &sensorOrigin,
-        //    const PCLPointCloud& ground,
-        //    const PCLPointCloud& nonground);
-
-        void filterGroundPlane(const PCLPointCloud& pc,
-                               PCLPointCloud& ground,
-                               PCLPointCloud& nonground) const;
-
-        bool isSpeckleNode(const octomap::OcTreeKey& key) const;
-
-        virtual void update2DMap(const OcTreeT::iterator&, bool);
+        virtual void insertScanPointCloud(
+            const geometry_msgs::msg::Vector3 &sensorOriginTf,
+	    const PCLPointCloud& pc);
 
         virtual void onInit();        
         virtual void subscribe();
         
-        void adjustMapData(nav_msgs::msg::OccupancyGrid& map,
-                           const nav_msgs::msg::MapMetaData& oldMapInfo) const;
         
     public:        
         explicit OctomapServer(
-            const rclcpp::NodeOptions &,
             const std::string = "octomap_server");
+        //explicit OctomapServer(
+        //    const rclcpp::NodeOptions &,
+        //    const std::string = "octomap_server");
         virtual ~OctomapServer();        
         virtual bool octomapBinarySrv(
             const std::shared_ptr<OctomapSrv::Request> ,
@@ -231,9 +166,6 @@ namespace octomap_server {
             const std::shared_ptr<OctomapSrv::Request> ,
             std::shared_ptr<OctomapSrv::Response>);
 
-        bool clearBBXSrv(
-            const std::shared_ptr<BBXSrv::Request>,
-            std::shared_ptr<BBXSrv::Response>);
         bool resetSrv(
             const std::shared_ptr<std_srvs::srv::Empty::Request>,
             std::shared_ptr<std_srvs::srv::Empty::Response>);
@@ -242,6 +174,7 @@ namespace octomap_server {
             const sensor_msgs::msg::PointCloud2::ConstSharedPtr &);
         virtual bool openFile(const std::string& filename);
 
+        virtual std::shared_ptr<OcTreeT> get_octree() { return m_octree; };
     };    
 } // octomap_server
 

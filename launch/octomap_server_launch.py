@@ -14,10 +14,11 @@ from launch.substitutions import ThisLaunchFileDir
 def generate_launch_description():
 
     params = {'resolution': 0.15,
-              'frame_id': 'camera_link',
+              'publish_resolution_m': 0.15,
+              'frame_id': 'world',
               'base_frame_id': 'base_footprint',
               'height_map': True,
-              'colored_map': True,
+              'colored_map': False,
               'color_factor': 0.8,
               'filter_ground': False,
               'filter_speckles': False,
@@ -40,14 +41,17 @@ def generate_launch_description():
               'color_free/b': 1.0,
               'color_free/a': 1.0,
               'publish_free_space': False,
-              'publish_marker_array': True,
-              'publish_binary_map': True,
-              'publish_full_map': False
+              'publish_marker_array': False,
+              'publish_binary_map': False,
+              'publish_full_map': False,
+              'publish_occupied_pcl': False,
+              'pointcloud_min_z': -0.1,
+              'pointcloud_max_z': 2.0
     }
     
     remap = [('cloud_in', '/camera/depth/color/points')]
     node = Node(package='octomap_server2',
-                 executable='octomap_server',
+                 executable='octomap_server2',
                  output='screen',
                  remappings=remap,
                  parameters=[params])

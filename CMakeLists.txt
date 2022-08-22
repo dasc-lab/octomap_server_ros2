@@ -38,11 +38,17 @@ link_directories(${PCL_LIBRARY_DIRS})
 include_directories(${PCL_INCLUDE_DIRS})
 include_directories(include)
 
-add_library(octomap_server2 SHARED
+add_executable(octomap_server2
   src/octomap_server.cpp
   src/transforms.cpp
   src/conversions.cpp
-  )
+)
+
+# add_library(octomap_server2 SHARED
+#   src/octomap_server.cpp
+#   src/transforms.cpp
+#   src/conversions.cpp
+#   )
 
 ament_target_dependencies(octomap_server2
   rclcpp
@@ -64,19 +70,25 @@ ament_target_dependencies(octomap_server2
 
 target_link_libraries(octomap_server2 ${PCL_LIBRARIES} ${OCTOMAP_LIBRARIES})
 
-rclcpp_components_register_node(octomap_server2
-  PLUGIN "octomap_server::OctomapServer"
-  EXECUTABLE octomap_server)
+#rclcpp_components_register_node(octomap_server2
+#  PLUGIN "octomap_server::OctomapServer"
+#  EXECUTABLE octomap_server)
+
+# install(TARGETS
+#   octomap_server2
+#   ARCHIVE DESTINATION lib
+#   LIBRARY DESTINATION lib
+#   RUNTIME DESTINATION bin)
+# 
+# install(DIRECTORY
+#   launch
+#   DESTINATION share/${PROJECT_NAME}/
+#   )
+
 
 install(TARGETS
-  octomap_server2
-  ARCHIVE DESTINATION lib
-  LIBRARY DESTINATION lib
-  RUNTIME DESTINATION bin)
-
-install(DIRECTORY
-  launch
-  DESTINATION share/${PROJECT_NAME}/
-  )
+	octomap_server2
+	DESTINATION lib/${PROJECT_NAME}
+)
 
 ament_package()
